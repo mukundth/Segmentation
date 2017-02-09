@@ -1,0 +1,880 @@
+##FOLLOW THE INSTRUCTIONS IN THIS CODE WITH THE PROVIDED FILES AND IT OUGHT TO WORK!
+
+#1. Data Cleaning and Preparing the data set for analysis
+#2. Creating new relevant Variables  (May or may not happen)
+#3. Treatment on Missing Values
+#4. Tackling the Outliers and scaling variables
+#5. Multicollinearity check and hence reducing dimensions (Non scaled variables)
+#6. Choosing Variables (Variable importance using RF)
+#7. Deciding on clusters (K) and Checking the Optimality of the solution
+#8. Getting Cluster solution 
+#9  Compare segmentation fits 
+#10 Summarize Results
+
+file.choose()
+#administrative
+setwd("/home/muthiyagarajan/Sample_seg")
+load("/.RData") #loads the last working environment
+save.image() #saves current environment 
+gc(reset=TRUE) #helpful to get rid of junk
+
+# install.packages("cluster")
+# install.packages("tidyr")
+# install.packages("dplyr")
+# install.packages("reshape2")
+# install.packages("NbClust")
+# install.packages('dendextend')
+# install.packages('dendextendRcpp')
+# install.packages("ggplot2")
+# install.packages("Hmisc")
+# install.packages("data.table")
+# install.packages("scales")
+# install.packages("fBasics")
+# install.packages("scales")
+
+library("cluster")
+library("tidyr")
+library("dplyr")
+library("reshape2")
+library("NbClust")
+# library('dendextend')
+# library('dendextendRcpp')
+library("ggplot2")
+library("Hmisc")
+library("data.table")
+library("scales")
+library("fBasics")
+
+
+###################################################################################################
+#1. Data Cleaning and Preparing the data set for analysis
+###################################################################################################
+
+#use alation fast export and attached query to get data in a csv file
+
+#IMPORT ALL DATA
+full_data <- read.table("/home/muthiyagarajan/Sample_seg/seg_data.csv", sep = ",", header = TRUE)
+full_data <- as.data.frame(full_data)
+
+
+# MUTATE DATA TO CREATE ADDNL VARIABLES
+# full_data <- mutate(full_data, NEW_GOLF_CUSTOMER = ifelse((full_data$TAG_GOLF_BUYER_TY == 1) & (full_data$TAG_GOLF_BUYER_LY == 0) & (full_data$TAG_GOLF_BUYER_LLY == 0),1,0))
+
+###################################################################################################
+#2. Data Cleaning
+###################################################################################################
+
+varnames <- colnames(full_data)
+View(varnames)
+
+#SEPARATING NUMERIC DATA
+num_cols <- sapply(full_data, is.numeric)
+full_data <- full_data[,num_cols]
+
+###################################################################################################
+#2.1 Missing value imputation
+###################################################################################################
+
+#REPLACING NA's
+#if there are NA's 
+#full_data_numeric[is.na(full_data_numeric)] = 0.00
+
+#REPLACING values with 0 for specific variables
+# full_data$GOLF_RECENCY_MNTHS[full_data$GOLF_RECENCY_MNTHS < 0] = 0
+# full_data$GOLF_TENURE_MNTHS[full_data$GOLF_TENURE_MNTHS < 0] = 0
+
+
+# SUMMARIZING DATA
+#only have to run this once --> or upon adding new variables
+summary <- as.data.frame(basicStats(full_data))
+summary <- (t(summary))
+write.table(summary,"C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\summary.csv", sep = ",")  
+
+#SUMMARIZING DATA VIA Univariate analysis
+#only have to run this once --> or upon adding new variables
+z <- full_data
+for (i in 1:ncol(z)) 
+{
+  z1<-t(as.data.frame(quantile(z[,i],prob=c(0,0.001,0.003,0.01,0.05,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.95,0.96,0.97,0.98,0.99,0.997,0.999,0.9999,1),na.rm=TRUE)))
+  row.names(z1)[1]<-colnames(z)[i]
+  total<-nrow(z)
+  total_miss<-sum(is.na(z[,i]))
+  z1<-cbind(z1,total,total_miss)
+  if (i==1) y<-z1 else y<-rbind(y,z1)
+}
+View(y)
+write.csv(y,"C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\variable_quantile_values")
+
+
+full_data<- mutate(full_data, premium_pct_si = SI_PREMIUM_BRAND_TY/SG_GMV_TY)
+full_data<- mutate(full_data, generic_pct_si = SI_GENERIC_BRAND_TY/SG_GMV_TY)
+full_data<- mutate(full_data, uncat_pct_si = SI_UNCAT_BRAND_TY/SG_GMV_TY)
+
+
+#All potential variables to look at
+myvars_potential <- c('LOYALTY_TY' 
+                      ,'SG_ASP_TY'	
+                      ,'SG_GMV_TY'	
+                      ,'SG_SELL_DAYS_TY'		
+                      ,'SI_PREMIUM_BRAND_TY'
+                      ,'SI_NICHE_BRAND_TY'
+                      ,'SI_GENERIC_BRAND_TY'
+                      ,'SI_UNCAT_BRAND_TY'
+                      ,'SI_ACCESSORY_TY'
+                      ,'SI_PERFORMANCE_TY'
+                      ,'SI_PRACTICE_TY'                  
+                      ,'PERC_TOP50_BRAND_LSTG_TY'	
+                      ,'PERC_TOP100_BRAND_LSTG_TY'	
+                      ,'PERC_TOP10_BRAND_LSTG_TY'
+                      ,'premium_pct_si'
+                      ,'generic_pct_si'
+                      ,'uncat_pct_si'
+                      
+)
+
+#Data with only the potential segmentation variables
+seg_vars_full_data <- full_data[myvars_potential]
+
+#Distribution of variables
+lapply(seg_vars_full_data,quantile,c(0,0.003,0.01,0.05,0.1,0.25,0.4,0.5,0.6,0.75,0.9,0.95,0.99,0.997,1))
+head(seg_vars_full_data,10)
+
+
+###################################################################################################
+#4. DETERMINE WHICH VARIABLES TO USE FOR CLUSTERING
+###################################################################################################
+
+# ##plot piecewise correlation of variables 
+# ##find variables highly-correlated  
+d_cor <- as.matrix(cor(seg_vars_full_data)) 
+d_cor_melt <- arrange(melt(d_cor), -abs(value))
+corr_matrix <- subset(d_cor_melt, Var1!=Var2) #All correlations except with themselves
+corr_matrix <- subset(t, abs(value) > 0.65)  # Variables not to be taken
+View(corr_matrix)
+#rm(corr_matrix)
+
+write.csv(corr_matrix,"C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\correlation_matrix")
+
+# library("GGally")
+# ggpairs(select(sample_n(full_data,1000),VER_FAS_GMB_TY,VER_FAS_BI_TY,WATCH_GMB_TY,TENURE_FASH,AGE, FM))
+
+
+###################################################################################################
+#3.  OUTLIER TREATMENT 
+###################################################################################################
+
+#cap outliers for all variables - Preferred method is to cap variables
+cap_outliers <- function(data)
+{
+  quant <- quantile(data,c(0,0.99))  # 0.01% from top capped
+  data[data < quant[1]] <- min(data[data >= quant[1]])
+  data[data > quant[2]] <- max(data[data <= quant[2]])
+  return(data)
+}
+
+seg_vars_full_data <- as.data.frame(sapply(seg_vars_full_data,cap_outliers))
+
+#CHK PERCENTILE TO MAKE SURE IT IS CAPPED
+capped_outliers <- lapply(seg_vars_full_data,quantile,c(0,0.003,0.01,0.03,0.05,0.25,0.5,0.55,0.6,0.65,0.7,0.75,0.9,0.95,0.99,0.997,1))
+View(capped_outliers)
+write.csv(capped_outliers,"C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\capped_outliers")
+
+###################################################################################################
+#3.5. SAMPLE DATASET if necessary
+###################################################################################################
+seg_vars_data_sample <- sample_n(seg_vars_full_data,100000)
+descriptive_stats <- describe(seg_vars_full_data)
+print(descriptive_stats)
+descriptive_stats_sample <- describe(seg_vars_data_sample)
+print(descriptive_stats_sample)
+#Always compare means and Std Dev for variables in both the sample dataset and the whole - if you are using sample data i.e.
+
+
+
+###################################################################################################
+#5. Subset and sample with significant variables (determined earlier)
+###################################################################################################
+#choose variables for segmentation after looking at correlations etc
+data_unscaled <- select(seg_vars_full_data
+                        ,premium_pct_si
+                        ,generic_pct_si
+                        ,uncat_pct_si
+)
+data  <- scale(data_unscaled, center=TRUE, scale=TRUE)
+data <- data.frame(data)  
+
+###################################################################################################
+#6. finding the best cluster size 
+###################################################################################################
+#create function to output Sum of Squared Errors for each # of clusters
+wssplot <- function(data, nc=20, seed=1234){
+  wss <- (nrow(data)-1)*sum(apply(data,2,var))
+  for (i in 2:nc){
+    set.seed(seed)
+    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+  plot(1:nc, wss, type="b", xlab="Number of Clusters",
+       ylab="Within groups sum of squares")}
+
+wssplot(data)  
+#Kink at 3,5
+
+#run NbClust to get recommendation of up to 30 different indices for the right number of cluster  
+set.seed(1234)
+#PUT LOW SAMPLE SIZE - WORKS WITH 1000
+nc <- NbClust(sample_n(data,500), min.nc=2, max.nc=15, method="kmeans")
+table(nc$Best.n[1,]) #of votes for each number of cluster from criteria
+barplot(table(nc$Best.n[1,]),
+        xlab="Numer of Clusters", ylab="Number of Criteria",
+        main="Number of Clusters Chosen by 26 Criteria")
+
+###################################
+
+## heirarchical clustering
+# Ward Hierarchical Clustering
+#d <- dist(sample_n(data,50000), method = "euclidean") # distance matrix
+#fit <- hclust(d, method="ward.D2") 
+#plot(fit) # display dendogram
+#groups <- cutree(fit, k=5) # cut tree into 5 clusters
+# draw dendogram with red borders around the 5 clusters 
+#rect.hclust(fit, k=5, border="red")
+
+###################################################################################################
+#7. Run Models
+###################################################################################################
+
+clusters = seq(from = 3, to = 6, by = 1)  #clusters from 3 to 6 in intervals of 1. 
+
+#set seed to make results reproducible
+set.seed(1234)
+
+#runs clustering model for each of the clusters and appends the cluster that each user is in to the main dataset
+for (i in clusters){
+  k <- kmeans(data, i, nstart=25, iter.max = 100)   #runs kmeans with an amount (i) of clusters
+  t <- data.frame(k$cluster)  #makes a vector of what cluster each customer is in with i vector solution
+  print(paste("ran","cluster with",i,"centers", sep = ' '))
+  full_data <- cbind(full_data,t$k.cluster) #appends the vector to the original dataset
+  print("appended cluster value to dataset")
+  colnames(full_data)[which(names(full_data) == 't$k.cluster')] <- paste('cluster', i, sep = '')
+}  
+
+
+###################################################################################################
+#8. compare segmentation fits 
+###################################################################################################
+
+# data_sample <- sample_n(data[,c(1,2,3)],10000)  #1,2,3 represent variables to be segmented
+# model1<-kmeans(data_sample, 6,nstart=25,iter.max = 100) #change the second input for the appropriate number of clusters
+# model2<-kmeans(data_sample, 4,nstart=25,iter.max = 100) #change the second input for the appropriate number of clusters
+#  
+# library(fpc)
+# d <- dist(data_sample, method = "euclidean") # distance matrix
+# cluster.stats(d, model1$cluster, model2$cluster)
+
+###################################################################################################
+#9. Deep dive into segment results
+###################################################################################################
+histPercent <- function(x, ...) {
+  H <- hist(x, plot = FALSE)
+  H$density <- with(H, 100 * density* diff(breaks)[1])
+  labs <- ifelse(round(H$density)>0,paste(round(H$density), "%", sep=""),paste(""))
+  plot(H, freq = FALSE, labels = labs, ylim=c(0, 1.08*max(H$density)),...)
+}
+
+#number of users in each cluster
+#use this to quickly see if the users are grouped too tightly in one cluster or another
+
+histPercent(full_data$cluster3)  # 66% 1%  33% 
+histPercent(full_data$cluster4)  # 65% 1% 33% 1%
+histPercent(full_data$cluster5)  # 58% 1% 1% 13% 27%
+histPercent(full_data$cluster6)  # 2% 1% 13% 58% 1% 27%
+
+# Use this to get the number 
+hist(full_data$cluster3, labels=TRUE)
+hist(full_data$cluster4, labels=TRUE)
+hist(full_data$cluster5, labels=TRUE) 
+hist(full_data$cluster6, labels=TRUE)
+
+
+#summary of clusters Change cluster3 to required cluster
+# seg_summary <- (t(aggregate(full_data, by=list(cluster=data$cluster6), mean,na.rm=TRUE)))
+# counts<- t(summarise(group_by(full_data,cluster5),n()))
+# counts<- counts[2,]
+# seg_summary <-rbind(seg_summary,counts)
+# View(seg_summary)
+
+
+# #Join data with main data (with cluster number)
+# joined_data <- cbind(full_data,data$cluster6)
+# #RENAME CLUSTERING COLUMN NAME
+# names(joined_data)[names(joined_data) == 'data$cluster6'] <- paste('cluster6') 
+# head(joined_data,1) #View joined data
+
+###################################################################################################
+#10. output segment summary
+###################################################################################################
+
+full_data <- full_data[, !duplicated(colnames(full_data))]
+
+#Custom output  - PUT ALL VARIABLES NEEDED FOR PROFILING IN THE BELOW CODE
+profile_summary <- summarise(group_by(full_data, cluster6)
+                             ,n()                    
+                             ,sum(PRIMARY_USER_ID, na.rm =TRUE)
+                             ,sum(css_seg_large_merchant_dummy)
+                             ,sum(css_seg_merchant_dummy)
+                             ,sum(css_seg_Entrepreneur_dummy)
+                             ,sum(css_seg_Regular_dummy)
+                             ,sum(css_seg_Occasional_dummy)
+                             ,sum(top_rated_seller_yn)
+                             ,sum(b2c_managed_dummy)
+                             ,sum(b2c_unmanaged_dummy)
+                             ,sum(c2c_seg_abandoned_lister_dummy)
+                             ,sum(c2c_seg_one_time_dummy)
+                             ,sum(c2c_seg_no_list_dummy)
+                             ,sum(c2c_seg_short_burst_dummy)
+                             ,sum(c2c_seg_lapsed_seller_dummy)
+                             ,sum(c2c_seg_Arbitrager_dummy)
+                             ,sum(c2c_seg_lapsed_ebay_dummy)
+                             ,sum(c2c_seg_heavy_seller_dummy)
+                             ,sum(c2c_seg_no_sale_dummy)
+                             ,sum(c2c_seg_steady_eddy_dummy)
+                             ,sum(SG_LISTINGS_TY)
+                             ,sum(SG_LISTINGS_SOLD_TY)
+                             ,sum(SG_SELL_DAYS_TY)
+                             ,sum(SG_GMV_TY)
+                             ,sum(SG_SI_TY)
+                             ,sum(SG_TX_TY)
+                             ,sum(SG_FP_GMV_TY)
+                             ,sum(SG_AUCTION_GMV_TY)
+                             ,sum(SG_NEW_GMV_TY)
+                             ,sum(SG_USED_GMV_TY)
+                             ,sum(SG_FP_SI_TY)
+                             ,sum(SG_AUCTION_SI_TY)
+                             ,sum(SG_NEW_SI_TY)
+                             ,sum(SG_USED_SI_TY)
+                             ,sum(SG_FP_SI_TY.1)
+                             ,sum(SG_AUCTION_SI_TY.1)
+                             ,sum(SG_NEW_SI_TY.1)
+                             ,sum(SG_USED_SI_TY.1)
+                             ,sum(FDBK_SCORE_TY)
+                             ,sum(eTRS_CD_TY)
+                             ,sum(SG_REVENUE_TY)
+                             ,sum(SG_TAKE_RATE_TY)
+                             ,sum(SG_BBE_CNT_TY)
+                             ,sum(SG_SHIP_TM_BBE_CNT_TY)
+                             ,sum(SG_ITEM_QLTY_BBE_CNT_TY)
+                             ,sum(MANAGED_TAG)
+                             ,sum(Lost_Seller_TY)
+                             ,sum(Gained_Seller_TY)
+                             ,sum(Retained_Seller_TY)
+                             ,sum(VER_ELE_GMV_TY)
+                             ,sum(VER_FAS_GMV_TY)
+                             ,sum(VER_HOM_GMV_TY)
+                             ,sum(VER_COL_GMV_TY)
+                             ,sum(VER_PA_GMV_TY)
+                             ,sum(VER_BNI_GMV_TY)
+                             ,sum(VER_LNM_GMV_TY)
+                             ,sum(VER_ELE_SI_TY)
+                             ,sum(VER_FAS_SI_TY)
+                             ,sum(VER_HOM_SI_TY)
+                             ,sum(VER_COL_SI_TY)
+                             ,sum(VER_PA_SI_TY)
+                             ,sum(VER_BNI_SI_TY)
+                             ,sum(VER_LNM_SI_TY)
+                             ,sum(FREE_SHIP_TX_TY)
+                             ,sum(FREE_SHIP_SI_TY)
+                             ,sum(FREE_SHIP_GMV_TY)
+                             ,sum(FREE_SHIP_IND_CNT_TY)
+                             ,sum(FREE_SHIP_SALE_IND_CNT_TY)
+                             ,sum(FREE_SHIP_ASP_TY)
+                             ,sum(FREE_SHIP_ASP_LY)
+                             ,sum(FREE_SHIP_LSTNG_RATE_TY)
+                             ,sum(FREE_SHIP_LSTNG_RATE_LY)
+                             ,sum(LISTING_PC_TY)
+                             ,sum(LISTING_MOBILE_TY)
+                             ,sum(EBAY_BBE_CNT_TY)
+                             ,sum(EBAY_BBE_CNT_LY)
+                             ,sum(EBAY_ITEM_QLTY_BBE_CNT_TY)
+                             ,sum(EBAY_ITEM_QLTY_BBE_CNT_LY)
+                             ,sum(EBAY_SHIP_TM_BBE_CNT_TY)
+                             ,sum(GMV_GROWTH)
+                             ,sum(SI_GROWTH)
+                             ,sum(ASP_GROWTH)
+                             ,sum(META_CNT)
+                             ,sum(EBAY_GMV_TY)
+                             ,sum(EBAY_GMV_LY)
+                             ,sum(LOYALTY_TY)
+                             ,sum(LISTING_JAN_TY)
+                             ,sum(LISTING_FEB_TY)
+                             ,sum(LISTING_MAR_TY)
+                             ,sum(LISTING_APR_TY)
+                             ,sum(LISTING_MAY_TY)
+                             ,sum(LISTING_JUN_TY)
+                             ,sum(LISTING_JLY_TY)
+                             ,sum(LISTING_AUG_TY)
+                             ,sum(LISTING_SEP_TY)
+                             ,sum(LISTING_OCT_TY)
+                             ,sum(LISTING_NOV_TY)
+                             ,sum(LISTING_DEC_TY)
+                             ,sum(NUM_LISTING_NOT_SOLD_TY)
+                             ,sum(VI_TY)
+                             ,sum(SRCH_TY)
+                             ,sum(CONVERSION_TY)
+                             ,sum(CONVERSION_LY)
+                             ,sum(DAILY_LISTINGS_TY)
+                             ,sum(DAILY_LISTINGS_LY)
+                             ,sum(DAILY_LISTINGS_LLY)
+                             ,sum(IS_EBAY_BUYER)
+                             ,sum(IS_SG_BUYER)
+                             ,sum(SPORT_GMV_TY)
+                             ,sum(DEALS_TY)
+                             ,sum(DEALS_LY)
+                             ,sum(NUM_SE_TY)
+                             ,sum(NUM_SE_LY)
+                             ,sum(PERC_SE_TY)
+                             ,sum(PERC_SE_LY)
+                             ,sum(RETURNS_TY)
+                             ,sum(RETURNS_LY)
+                             ,sum(IS_STORE_CURRENT_TAG)
+                             ,sum(IS_STORE_TY_TAG)
+                             ,sum(TOT_BUYER_CNT_TY)
+                             ,sum(TOT_REPEAT_BUYER_CNT_TY)
+                             ,sum(TOT_BUYER_CNT_LY)
+                             ,sum(TOT_REPEAT_BUYER_CNT_LY)
+                             ,sum(TOT_NUM_VIEWS_LY)
+                             ,sum(AVG_BUYER_CNT_TY)
+                             ,sum(AVG_BUYER_CNT_LY)
+                             ,sum(AVG_REPEAT_BUYER_CNT_TY)
+                             ,sum(AVG_REPEAT_BUYER_CNT_LY)
+                             ,sum(TOT_NUM_SEARCH_LY)
+                             ,sum(AVG_NUM_VIEWS_LY)
+                             ,sum(TOT_NUM_VIEWS_TY)
+                             ,sum(TOT_NUM_SEARCH_TY)
+                             ,sum(AVG_NUM_VIEWS_TY)
+                             ,sum(AVG_NUM_SEARCH_TY)
+                             ,sum(TOT_VISITORS_TY)
+                             ,sum(TOT_VISITORS_LY)
+                             ,sum(AVG_USER_VISITOR_TY)
+                             ,sum(AVG_USER_VISITOR_LY)
+                             ,sum(SELLER_DAYS_VISITOR_TY)
+                             ,sum(SELLER_DAYS_VISITOR_LY)
+                             ,sum(SELLER_TYPE_SG_TY)
+                             ,sum(SELLER_TYPE_EBAY_TY)
+                             ,sum(SELLER_TYPE_SG_LY)
+                             ,sum(SELLER_TYPE_EBAY_LY)
+                             ,sum(SG_ASP_TY)
+                             ,sum(SG_ASP_LY)
+                             ,sum(SG_ASP_LLY)
+                             ,sum(TOT_USER_BBOWAC_TY)
+                             ,sum(TOT_USER_BBOWAC_LY)
+                             ,sum(AVG_USER_BBOWAC_TY)
+                             ,sum(AVG_USER_BBOWAC_LY)
+                             ,sum(SELLER_DAYS_BBOWAC_TY)
+                             ,sum(SELLER_DAYS_BBOWAC_LY)
+                             ,sum(NUM_LISTING_NO_BB_SOLD_TY)
+                             ,sum(PERC_LISTING_NOT_SOLD_TY)
+                             ,sum(PERC_LISTING_NOT_SOLD_LY)
+                             ,sum(PERC_DEALS_TY)
+                             ,sum(PERC_DEALS_LY)
+                             ,sum(PERC_LISTING_NO_BB_SOLD_TY)
+                             ,sum(GOLF_CLUB_COMP_SI_TY)
+                             ,sum(GOLF_ACCESSORIES_SI_TY)
+                             ,sum(GOLF_CSA_SI_TY)
+                             ,sum(GOLF_BALLS_SI_TY)
+                             ,sum(GOLF_CLUB_BAGS_SI_TY)
+                             ,sum(GOLF_CLUBS_SI_TY)
+                             ,sum(GOLF_TEES_SI_TY)
+                             ,sum(GOLF_OTHER_EQUIP_SI_TY)
+                             ,sum(GOLF_PUSHPULL_CART_SI_TY)
+                             ,sum(GOLF_TRAINING_AIDS_SI_TY)
+                             ,sum(GOLF_OTHER_SI_TY)
+                             ,sum(GOLF_VINTAGE_EQUIP_SI_TY)
+                             ,sum(GOLF_CLUB_COMP_GMV_TY)
+                             ,sum(GOLF_ACCESSORIES_GMV_TY)
+                             ,sum(GOLF_CSA_GMV_TY)
+                             ,sum(GOLF_BALLS_GMV_TY)
+                             ,sum(GOLF_CLUB_BAGS_GMV_TY)
+                             ,sum(GOLF_CLUBS_GMV_TY)
+                             ,sum(GOLF_TEES_GMV_TY)
+                             ,sum(GOLF_OTHER_EQUIP_GMV_TY)
+                             ,sum(GOLF_PUSHPULL_CART_GMV_TY)
+                             ,sum(GOLF_TRAINING_AIDS_GMV_TY)
+                             ,sum(GOLF_OTHER_GMV_TY)
+                             ,sum(GOLF_VINTAGE_EQUIP_GMV_TY)
+                             ,sum(VER_ELE_IND)
+                             ,sum(VER_FAS_IND)
+                             ,sum(VER_HOM_IND)
+                             ,sum(VER_COL_IND)
+                             ,sum(VER_PA_IND)
+                             ,sum(VER_BNI_IND)
+                             ,sum(VER_LNM_IND)
+                             ,sum(VER_CNT)
+                             ,sum(IS_GOLF_BUYER)
+                             #new things add to bottom 
+                             ,sum(POS_FDBK_CNT_TY, na.rm = TRUE)
+                             ,sum(NEG_FDBK_CNT_TY, na.rm = TRUE)
+                             ,sum(NTL_FDBK_CNT_TY, na.rm = TRUE)
+                             ,sum(SELLER_TYPE_SG_TY, na.rm = TRUE)
+                             ,sum(SELLER_TYPE_EBAY_TY, na.rm = TRUE)
+                             ,sum(PERC_TOP50_BRAND_LSTG_TY)
+                             ,sum(PERC_TOP50_BRAND_LSTG_LY)
+                             ,sum(PERC_TOP100_BRAND_LSTG_TY)
+                             ,sum(PERC_TOP100_BRAND_LSTG_LY)
+                             ,sum(PERC_TOP10_BRAND_LSTG_TY)
+                             ,sum(PERC_TOP10_BRAND_LSTG_LY)
+                             ,sum(GMV_SE_TY)
+                             ,sum(GMV_SE_LY)
+                             ,sum(GMV_DEALS_TY)
+                             ,sum(GMV_DEALS_LY)
+                             ,sum(GMV_ACCESSORY_TY)
+                             ,sum(GMV_PERFORMANCE_TY)
+                             ,sum(GMV_PRACTICE_TY)
+                             ,sum(SI_ACCESSORY_TY)
+                             ,sum(SI_PERFORMANCE_TY)
+                             ,sum(SI_PRACTICE_TY)
+                             ,sum(GMV_ACCESSORY_LY)
+                             ,sum(GMV_PERFORMANCE_LY)
+                             ,sum(GMV_PRACTICE_LY)
+                             ,sum(SI_ACCESSORY_LY)
+                             ,sum(SI_PERFORMANCE_LY)
+                             ,sum(SI_PRACTICE_TY.1)
+                             ,sum(NUM_PREMIUM_BRAND_TY)
+                             ,sum(NUM_NICHE_BRAND_TY)
+                             ,sum(NUM_GENERIC_BRAND_TY)
+                             ,sum(NUM_UNCAT_BRAND_TY)
+                             ,sum(GMV_PREMIUM_BRAND_TY)
+                             ,sum(GMV_NICHE_BRAND_TY)
+                             ,sum(GMV_GENERIC_BRAND_TY)
+                             ,sum(GMV_UNCAT_BRAND_TY)
+                             ,sum(SI_PREMIUM_BRAND_TY)
+                             ,sum(SI_NICHE_BRAND_TY)
+                             ,sum(SI_GENERIC_BRAND_TY)
+                             ,sum(SI_UNCAT_BRAND_TY)
+                             ,sum(NUM_PREMIUM_BRAND_LY)
+                             ,sum(NUM_NICHE_BRAND_LY)
+                             ,sum(NUM_GENERIC_BRAND_LY)
+                             ,sum(NUM_UNCAT_BRAND_LY)
+                             ,sum(GMV_PREMIUM_BRAND_LY)
+                             ,sum(GMV_NICHE_BRAND_LY)
+                             ,sum(GMV_GENERIC_BRAND_LY)
+                             ,sum(GMV_UNCAT_BRAND_LY)
+                             ,sum(SI_PREMIUM_BRAND_LY)
+                             ,sum(SI_NICHE_BRAND_LY)
+                             ,sum(SI_GENERIC_BRAND_LY)
+                             ,sum(SI_UNCAT_BRAND_LY)
+                             ,sum(POS_FDBK_CNT_TY)
+                             ,sum(NEG_FDBK_CNT_TY)
+                             ,sum(NTL_FDBK_CNT_TY)
+                             ,sum(SELLER_TYPE_SG_TY.1)
+                             ,sum(SELLER_TYPE_EBAY_TY.1)
+                             ,sum(pct_premium_brand_si)
+                             ,sum(pct_NICHE_brand_si)
+                             ,sum(pct_GENERIC_brand_si)
+                             ,sum(pct_UNCAT_brand_si)
+                             ,sum(pct_premium_brand_gmv)
+                             ,sum(pct_NICHE_brand_gmv)
+                             ,sum(pct_GENERIC_brand_gmv)
+                             ,sum(pct_UNCAT_brand_gmv)
+                             ,sum(pct_accessory_gmv)
+                             ,sum(pct_perf_gmv)
+                             ,sum(pct_practice_gmv)
+                             ,sum(pct_accessory_si)
+                             ,sum(pct_perf_si)
+                             ,sum(pct_practice_si)
+                             ,sum(pct_free_shipping_si)  
+                             
+)
+#transposing
+profile_summary <-t(profile_summary)
+
+#writing summary file to disk
+write.table(profile_summary, "C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\Final_Clus6_6.csv", sep=",")
+
+
+
+###################DAN CAN RELAX AND STOP DOING R############################
+##TRANSITION TO EXCEL / TRACKER###########################################
+
+# full_data <- full_data[, !duplicated(colnames(full_data))]
+
+#Calculating average measure for Golf category
+profile_golf_benchmark <- summarise(group_by(full_data,1)
+                                    ,n()                    
+                                    ,sum(PRIMARY_USER_ID)
+                                    ,sum(css_seg_large_merchant_dummy)
+                                    ,sum(css_seg_merchant_dummy)
+                                    ,sum(css_seg_Entrepreneur_dummy)
+                                    ,sum(css_seg_Regular_dummy)
+                                    ,sum(css_seg_Occasional_dummy)
+                                    ,sum(top_rated_seller_yn)
+                                    ,sum(b2c_managed_dummy)
+                                    ,sum(b2c_unmanaged_dummy)
+                                    ,sum(c2c_seg_abandoned_lister_dummy)
+                                    ,sum(c2c_seg_one_time_dummy)
+                                    ,sum(c2c_seg_no_list_dummy)
+                                    ,sum(c2c_seg_short_burst_dummy)
+                                    ,sum(c2c_seg_lapsed_seller_dummy)
+                                    ,sum(c2c_seg_Arbitrager_dummy)
+                                    ,sum(c2c_seg_lapsed_ebay_dummy)
+                                    ,sum(c2c_seg_heavy_seller_dummy)
+                                    ,sum(c2c_seg_no_sale_dummy)
+                                    ,sum(c2c_seg_steady_eddy_dummy)
+                                    ,sum(SG_LISTINGS_TY)
+                                    ,sum(SG_LISTINGS_SOLD_TY)
+                                    ,sum(SG_SELL_DAYS_TY)
+                                    ,sum(SG_GMV_TY)
+                                    ,sum(SG_SI_TY)
+                                    ,sum(SG_TX_TY)
+                                    ,sum(SG_FP_GMV_TY)
+                                    ,sum(SG_AUCTION_GMV_TY)
+                                    ,sum(SG_NEW_GMV_TY)
+                                    ,sum(SG_USED_GMV_TY)
+                                    ,sum(SG_FP_SI_TY)
+                                    ,sum(SG_AUCTION_SI_TY)
+                                    ,sum(SG_NEW_SI_TY)
+                                    ,sum(SG_USED_SI_TY)
+                                    ,sum(SG_FP_SI_TY)
+                                    ,sum(SG_AUCTION_SI_TY)
+                                    ,sum(SG_NEW_SI_TY)
+                                    ,sum(SG_USED_SI_TY)
+                                    ,sum(FDBK_SCORE_TY)
+                                    ,sum(eTRS_CD_TY)
+                                    ,sum(SG_REVENUE_TY)
+                                    ,sum(SG_TAKE_RATE_TY)
+                                    ,sum(SG_BBE_CNT_TY)
+                                    ,sum(SG_SHIP_TM_BBE_CNT_TY)
+                                    ,sum(SG_ITEM_QLTY_BBE_CNT_TY)
+                                    ,sum(MANAGED_TAG)
+                                    ,sum(Lost_Seller_TY)
+                                    ,sum(Gained_Seller_TY)
+                                    ,sum(Retained_Seller_TY)
+                                    ,sum(VER_ELE_GMV_TY)
+                                    ,sum(VER_FAS_GMV_TY)
+                                    ,sum(VER_HOM_GMV_TY)
+                                    ,sum(VER_COL_GMV_TY)
+                                    ,sum(VER_PA_GMV_TY)
+                                    ,sum(VER_BNI_GMV_TY)
+                                    ,sum(VER_LNM_GMV_TY)
+                                    ,sum(VER_ELE_SI_TY)
+                                    ,sum(VER_FAS_SI_TY)
+                                    ,sum(VER_HOM_SI_TY)
+                                    ,sum(VER_COL_SI_TY)
+                                    ,sum(VER_PA_SI_TY)
+                                    ,sum(VER_BNI_SI_TY)
+                                    ,sum(VER_LNM_SI_TY)
+                                    ,sum(FREE_SHIP_TX_TY)
+                                    ,sum(FREE_SHIP_SI_TY)
+                                    ,sum(FREE_SHIP_GMV_TY)
+                                    ,sum(FREE_SHIP_IND_CNT_TY)
+                                    ,sum(FREE_SHIP_SALE_IND_CNT_TY)
+                                    ,sum(FREE_SHIP_ASP_TY)
+                                    ,sum(FREE_SHIP_ASP_LY)
+                                    ,sum(FREE_SHIP_LSTNG_RATE_TY)
+                                    ,sum(FREE_SHIP_LSTNG_RATE_LY)
+                                    ,sum(LISTING_PC_TY)
+                                    ,sum(LISTING_MOBILE_TY)
+                                    ,sum(EBAY_BBE_CNT_TY)
+                                    ,sum(EBAY_BBE_CNT_LY)
+                                    ,sum(EBAY_ITEM_QLTY_BBE_CNT_TY)
+                                    ,sum(EBAY_ITEM_QLTY_BBE_CNT_LY)
+                                    ,sum(EBAY_SHIP_TM_BBE_CNT_TY)
+                                    ,sum(GMV_GROWTH)
+                                    ,sum(SI_GROWTH)
+                                    ,sum(ASP_GROWTH)
+                                    ,sum(META_CNT)
+                                    ,sum(EBAY_GMV_TY)
+                                    ,sum(EBAY_GMV_LY)
+                                    ,sum(LOYALTY_TY)
+                                    ,sum(LISTING_JAN_TY)
+                                    ,sum(LISTING_FEB_TY)
+                                    ,sum(LISTING_MAR_TY)
+                                    ,sum(LISTING_APR_TY)
+                                    ,sum(LISTING_MAY_TY)
+                                    ,sum(LISTING_JUN_TY)
+                                    ,sum(LISTING_JLY_TY)
+                                    ,sum(LISTING_AUG_TY)
+                                    ,sum(LISTING_SEP_TY)
+                                    ,sum(LISTING_OCT_TY)
+                                    ,sum(LISTING_NOV_TY)
+                                    ,sum(LISTING_DEC_TY)
+                                    ,sum(NUM_LISTING_NOT_SOLD_TY)
+                                    ,sum(VI_TY)
+                                    ,sum(SRCH_TY)
+                                    ,sum(CONVERSION_TY)
+                                    ,sum(CONVERSION_LY)
+                                    ,sum(DAILY_LISTINGS_TY)
+                                    ,sum(DAILY_LISTINGS_LY)
+                                    ,sum(DAILY_LISTINGS_LLY)
+                                    ,sum(IS_EBAY_BUYER)
+                                    ,sum(IS_SG_BUYER)
+                                    ,sum(SPORT_GMV_TY)
+                                    ,sum(DEALS_TY)
+                                    ,sum(DEALS_LY)
+                                    ,sum(NUM_SE_TY)
+                                    ,sum(NUM_SE_LY)
+                                    ,sum(PERC_SE_TY)
+                                    ,sum(PERC_SE_LY)
+                                    ,sum(RETURNS_TY)
+                                    ,sum(RETURNS_LY)
+                                    ,sum(IS_STORE_CURRENT_TAG)
+                                    ,sum(IS_STORE_TY_TAG)
+                                    ,sum(TOT_BUYER_CNT_TY)
+                                    ,sum(TOT_REPEAT_BUYER_CNT_TY)
+                                    ,sum(TOT_BUYER_CNT_LY)
+                                    ,sum(TOT_REPEAT_BUYER_CNT_LY)
+                                    ,sum(TOT_NUM_VIEWS_LY)
+                                    ,sum(AVG_BUYER_CNT_TY)
+                                    ,sum(AVG_BUYER_CNT_LY)
+                                    ,sum(AVG_REPEAT_BUYER_CNT_TY)
+                                    ,sum(AVG_REPEAT_BUYER_CNT_LY)
+                                    ,sum(TOT_NUM_SEARCH_LY)
+                                    ,sum(AVG_NUM_VIEWS_LY)
+                                    ,sum(TOT_NUM_VIEWS_TY)
+                                    ,sum(TOT_NUM_SEARCH_TY)
+                                    ,sum(AVG_NUM_VIEWS_TY)
+                                    ,sum(AVG_NUM_SEARCH_TY)
+                                    ,sum(TOT_VISITORS_TY)
+                                    ,sum(TOT_VISITORS_LY)
+                                    ,sum(AVG_USER_VISITOR_TY)
+                                    ,sum(AVG_USER_VISITOR_LY)
+                                    ,sum(SELLER_DAYS_VISITOR_TY)
+                                    ,sum(SELLER_DAYS_VISITOR_LY)
+                                    ,sum(SELLER_TYPE_SG_TY)
+                                    ,sum(SELLER_TYPE_EBAY_TY)
+                                    ,sum(SELLER_TYPE_SG_LY)
+                                    ,sum(SELLER_TYPE_EBAY_LY)
+                                    ,sum(SG_ASP_TY)
+                                    ,sum(SG_ASP_LY)
+                                    ,sum(SG_ASP_LLY)
+                                    ,sum(TOT_USER_BBOWAC_TY)
+                                    ,sum(TOT_USER_BBOWAC_LY)
+                                    ,sum(AVG_USER_BBOWAC_TY)
+                                    ,sum(AVG_USER_BBOWAC_LY)
+                                    ,sum(SELLER_DAYS_BBOWAC_TY)
+                                    ,sum(SELLER_DAYS_BBOWAC_LY)
+                                    ,sum(NUM_LISTING_NO_BB_SOLD_TY)
+                                    ,sum(PERC_LISTING_NOT_SOLD_TY)
+                                    ,sum(PERC_LISTING_NOT_SOLD_LY)
+                                    ,sum(PERC_DEALS_TY)
+                                    ,sum(PERC_DEALS_LY)
+                                    ,sum(PERC_LISTING_NO_BB_SOLD_TY)
+                                    ,sum(GOLF_CLUB_COMP_SI_TY)
+                                    ,sum(GOLF_ACCESSORIES_SI_TY)
+                                    ,sum(GOLF_CSA_SI_TY)
+                                    ,sum(GOLF_BALLS_SI_TY)
+                                    ,sum(GOLF_CLUB_BAGS_SI_TY)
+                                    ,sum(GOLF_CLUBS_SI_TY)
+                                    ,sum(GOLF_TEES_SI_TY)
+                                    ,sum(GOLF_OTHER_EQUIP_SI_TY)
+                                    ,sum(GOLF_PUSHPULL_CART_SI_TY)
+                                    ,sum(GOLF_TRAINING_AIDS_SI_TY)
+                                    ,sum(GOLF_OTHER_SI_TY)
+                                    ,sum(GOLF_VINTAGE_EQUIP_SI_TY)
+                                    ,sum(GOLF_CLUB_COMP_GMV_TY)
+                                    ,sum(GOLF_ACCESSORIES_GMV_TY)
+                                    ,sum(GOLF_CSA_GMV_TY)
+                                    ,sum(GOLF_BALLS_GMV_TY)
+                                    ,sum(GOLF_CLUB_BAGS_GMV_TY)
+                                    ,sum(GOLF_CLUBS_GMV_TY)
+                                    ,sum(GOLF_TEES_GMV_TY)
+                                    ,sum(GOLF_OTHER_EQUIP_GMV_TY)
+                                    ,sum(GOLF_PUSHPULL_CART_GMV_TY)
+                                    ,sum(GOLF_TRAINING_AIDS_GMV_TY)
+                                    ,sum(GOLF_OTHER_GMV_TY)
+                                    ,sum(GOLF_VINTAGE_EQUIP_GMV_TY)
+                                    ,sum(VER_ELE_IND)
+                                    ,sum(VER_FAS_IND)
+                                    ,sum(VER_HOM_IND)
+                                    ,sum(VER_COL_IND)
+                                    ,sum(VER_PA_IND)
+                                    ,sum(VER_BNI_IND)
+                                    ,sum(VER_LNM_IND)
+                                    ,sum(VER_CNT)
+                                    ,sum(IS_GOLF_BUYER)
+                                    ,sum(POS_FDBK_CNT_TY, na.rm = TRUE)
+                                    ,sum(NEG_FDBK_CNT_TY, na.rm = TRUE)
+                                    ,sum(NTL_FDBK_CNT_TY, na.rm = TRUE)
+                                    ,sum(SELLER_TYPE_SG_TY, na.rm = TRUE)
+                                    ,sum(SELLER_TYPE_EBAY_T, na.rm = TRUEY)
+)
+
+profile_golf_benchmark <-t(profile_golf_benchmark)
+
+write.table(profile_golf_benchmark, "C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\profile_golf_benchmark.csv", sep=",")
+
+
+
+##### END OF SEGMENTATION PROCESS  ########
+
+
+
+
+
+
+###################################################################################################
+#11. figure out business rules using DECISION TREES
+###################################################################################################
+
+b2c_segs <- as.data.frame(fread("C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\seller_segs_b2c.csv", sep = ",", header = TRUE))
+c2c_segs <- as.data.frame(fread("C:\\Users\\bchute\\Documents\\Sporting Goods\\Seller Segmentation\\seller_segs_c2c.csv", sep = ",", header = TRUE))
+
+View(b2c_segs)
+View(c2c_segs)
+
+c2c_bunched <- mutate(c2c_segs, grouped_clusters = ifelse(cluster5 == 2 |cluster5 == 3|cluster5 == 5,1,ifelse(cluster5 ==1|cluster5 ==4,2,99)))
+b2c_bunched <- mutate(b2c_segs, grouped_clusters = ifelse(cluster2 == 1,3,ifelse(cluster2 ==2,4,101)))
+
+View(b2c_bunched)
+View(c2c_bunched)
+
+c2c_pre_merge <- select(c2c_bunched, PRIMARY_USER_ID, grouped_clusters)
+b2c_pre_merge <- select(b2c_bunched, PRIMARY_USER_ID, grouped_clusters)
+
+View(c2c_pre_merge)
+View(b2c_pre_merge)
+
+segs_pre_merge <- rbind(c2c_pre_merge,b2c_pre_merge)
+
+joined_data <- inner_join(full_data, segs_pre_merge, by = 'PRIMARY_USER_ID' )
+joined_data$grouped_clusters <- factor(joined_data$grouped_clusters)
+
+joined_data$b2c_dummy_var <- ifelse(joined_data$b2c_c2c_tag_ty == 'b2c',1,0)
+summary(joined_data$b2c_dummy_var)
+
+'LOYALTY_TY' 
+,'SG_ASP_TY'
+
+
+# TREE package
+library(tree)
+frmla <- grouped_clusters ~ LOYALTY_TY + SG_GMV_TY + b2c_dummy_var
+tr = tree(frmla, data=joined_data)
+summary(tr)
+plot(tr); text(tr)
+table(predict(tr, newdata = joined_data , type = "class"), joined_data$grouped_clusters)
+
+
+#add predictions to the database
+b<- predict(tr, newdata = joined_data , type = "class")
+joined_data <- cbind(joined_data,b)
+names(joined_data)[235] <- "prediction"
+colnames(joined_data)
+#check for prediction accuracy
+table(joined_data$prediction, joined_data$grouped_clusters)
+###############
+# PARTY package
+library(partykit)
+
+tree_sample=sample_n(full_data,1000)
+frmla <- cluster3 ~ VER_FAS_BI_TY + FAS_ABP_TY
+
+set.seed(1234)
+(ct = ctree(frmla, data=tree_sample))
+plot(ct, main="Classification Tree")
+
+#Table of prediction errors
+table(predict(ct), tree_sample$cluster3)
+
+# Estimated class probabilities
+tr.pred = predict(ct, newdata=sample_n(full_data,1000), type="prob")
+
+###########################
